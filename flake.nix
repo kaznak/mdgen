@@ -12,9 +12,27 @@
       leanVersion = builtins.head
         (builtins.match "leanprover/lean4:v([^\n]+)\n?" (builtins.readFile ./lean-toolchain));
 
-      # Read Cli dependency info from lake-manifest.json
+      # Read lake-manifest.json for dependency info
       manifest = builtins.fromJSON (builtins.readFile ./lake-manifest.json);
-      cliPkg = builtins.head (builtins.filter (p: p.name == "Cli") manifest.packages);
+
+      # Fetch all git dependencies from the manifest
+      depSources = builtins.listToAttrs (map (pkg: {
+        name = pkg.name;
+        value = builtins.fetchGit {
+          url = pkg.url;
+          rev = pkg.rev;
+        };
+      }) (builtins.filter (pkg: pkg.type == "git") manifest.packages));
+
+      # Generate a replacement manifest with all deps converted to local paths
+      overrideManifest = manifest // {
+        packages = map (pkg: {
+          inherit (pkg) name;
+          inherited = pkg.inherited or false;
+          type = "path";
+          dir = ".lake/packages/${pkg.name}";
+        }) manifest.packages;
+      };
 
       # Read pre-computed toolchain hashes
       toolchainHashes = builtins.fromJSON (builtins.readFile ./nix/toolchain-hashes.json);
@@ -59,10 +77,17 @@
           '';
         };
 
-        cli-src = builtins.fetchGit {
-          url = cliPkg.url;
-          rev = cliPkg.rev;
-        };
+        # Write the override manifest as a JSON file in the nix store
+        overrideManifestJson = pkgs.writeText "package-overrides.json"
+          (builtins.toJSON overrideManifest);
+
+        # Shell commands to set up all dependencies
+        setupDepsScript = builtins.concatStringsSep "\n" (
+          pkgs.lib.mapAttrsToList (name: src: ''
+            cp -r ${src} .lake/packages/${name}
+            chmod -R u+w .lake/packages/${name}
+          '') depSources
+        );
 
       in {
         packages.default = pkgs.stdenv.mkDerivation {
@@ -71,10 +96,9 @@
 
           src = pkgs.lib.cleanSource ./.;
 
-          nativeBuildInputs = [ pkgs.git ]
-            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-              pkgs.autoPatchelfHook
-            ];
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.autoPatchelfHook
+          ];
           buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             pkgs.glibc
             pkgs.gcc-unwrapped.lib
@@ -84,20 +108,12 @@
             export HOME=$TMPDIR
             export PATH=${lean-toolchain}/bin:$PATH
 
-            # Set up Cli dependency as a proper git repo so Lake recognizes it
-            mkdir -p .lake/packages/Cli
-            cp -r ${cli-src}/. .lake/packages/Cli/
-            chmod -R u+w .lake/packages/Cli
-            pushd .lake/packages/Cli
-            git init -q
-            git remote add origin ${cliPkg.url}
-            git add -A
-            git -c user.name=nix -c user.email=nix@nix commit -q -m "nix"
-            LOCAL_REV=$(git rev-parse HEAD)
-            popd
+            # Set up all dependencies from lake-manifest.json as local paths
+            mkdir -p .lake/packages
+            ${setupDepsScript}
 
-            # Patch manifest so Lake sees the local commit as matching
-            sed -i "s/${cliPkg.rev}/$LOCAL_REV/" lake-manifest.json
+            # Override manifest so Lake uses local path dependencies
+            ln -sf ${overrideManifestJson} .lake/package-overrides.json
 
             lake build mdgen
           '';
