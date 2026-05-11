@@ -20,16 +20,17 @@ jobs:
         if: steps.lean-update.outputs.result == 'update-success'
         uses: cachix/install-nix-action@v31
 
-      - name: Update Nix toolchain hashes
+      - name: Update Nix flake
         if: steps.lean-update.outputs.result == 'update-success'
         run: |
           git fetch origin auto-update-lean/patch
           git checkout auto-update-lean/patch
           bash nix/update-hashes.sh
-          git add nix/toolchain-hashes.json
+          nix flake update
+          git add nix/toolchain-hashes.json flake.lock
           if ! git diff --cached --quiet; then
             git -c user.name="github-actions[bot]" \
                 -c user.email="github-actions[bot]@users.noreply.github.com" \
-              commit -m "chore(nix): update toolchain hashes"
+              commit -m "chore(nix): update toolchain hashes and flake.lock"
             git push
           fi

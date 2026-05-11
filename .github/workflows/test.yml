@@ -22,3 +22,18 @@ jobs:
         uses: leanprover/lean-action@v1
         with:
           build-args: "--fail-level=warning --log-level=warning"
+
+  nix-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Build mdgen
+        run: nix build
+
+      - name: Test mdgen
+        run: ./result/bin/mdgen --version
