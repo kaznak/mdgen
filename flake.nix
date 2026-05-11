@@ -7,38 +7,37 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
+    let
+      # Read version from lean-toolchain (e.g., "leanprover/lean4:v4.30.0-rc2")
+      leanVersion = builtins.head
+        (builtins.match "leanprover/lean4:v([^\n]+)\n?" (builtins.readFile ./lean-toolchain));
+
+      # Read Cli dependency info from lake-manifest.json
+      manifest = builtins.fromJSON (builtins.readFile ./lake-manifest.json);
+      cliPkg = builtins.head (builtins.filter (p: p.name == "Cli") manifest.packages);
+
+      # Read pre-computed toolchain hashes
+      toolchainHashes = builtins.fromJSON (builtins.readFile ./nix/toolchain-hashes.json);
+
+      platformSuffix = {
+        x86_64-linux = "linux";
+        aarch64-linux = "linux_aarch64";
+        x86_64-darwin = "darwin";
+        aarch64-darwin = "darwin_aarch64";
+      };
+    in
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-
-        leanVersion = "4.30.0-rc2";
-
-        platformInfo = {
-          x86_64-linux = {
-            suffix = "linux";
-            hash = "sha256-W1FiXxVPChOze9iS8dlfeen9W58NCVtBJiFe4ryNvoY=";
-          };
-          aarch64-linux = {
-            suffix = "linux_aarch64";
-            hash = "sha256-sZb0HaI5YOhC/A/AR0nRY51Eg5/q/AQU5Tyy22sWeQ8=";
-          };
-          x86_64-darwin = {
-            suffix = "darwin";
-            hash = "sha256-kqj9gZ002SDuWS8Ay449dEloLEsuQ6B2DCkhpuDn83A=";
-          };
-          aarch64-darwin = {
-            suffix = "darwin_aarch64";
-            hash = "sha256-aiPSYkH9eLzD0cJL6XNBv+P0Y18ub+q8u1hjA1KQqxs=";
-          };
-        }.${system};
+        suffix = platformSuffix.${system};
 
         lean-toolchain = pkgs.stdenv.mkDerivation {
           pname = "lean4-toolchain";
           version = leanVersion;
 
           src = pkgs.fetchurl {
-            url = "https://github.com/leanprover/lean4/releases/download/v${leanVersion}/lean-${leanVersion}-${platformInfo.suffix}.tar.zst";
-            hash = platformInfo.hash;
+            url = "https://github.com/leanprover/lean4/releases/download/v${leanVersion}/lean-${leanVersion}-${suffix}.tar.zst";
+            hash = toolchainHashes.${suffix};
           };
 
           nativeBuildInputs = [ pkgs.zstd ]
@@ -56,13 +55,13 @@
 
           installPhase = ''
             mkdir -p $out
-            cp -r lean-${leanVersion}-${platformInfo.suffix}/* $out/
+            cp -r lean-${leanVersion}-${suffix}/* $out/
           '';
         };
 
         cli-src = builtins.fetchGit {
-          url = "https://github.com/leanprover/lean4-cli.git";
-          rev = "13567aed1ac4f12aea9484178e07e51f8c9f7658";
+          url = cliPkg.url;
+          rev = cliPkg.rev;
         };
 
       in {
@@ -91,14 +90,14 @@
             chmod -R u+w .lake/packages/Cli
             pushd .lake/packages/Cli
             git init -q
-            git remote add origin https://github.com/leanprover/lean4-cli.git
+            git remote add origin ${cliPkg.url}
             git add -A
             git -c user.name=nix -c user.email=nix@nix commit -q -m "nix"
             LOCAL_REV=$(git rev-parse HEAD)
             popd
 
             # Patch manifest so Lake sees the local commit as matching
-            sed -i "s/13567aed1ac4f12aea9484178e07e51f8c9f7658/$LOCAL_REV/" lake-manifest.json
+            sed -i "s/${cliPkg.rev}/$LOCAL_REV/" lake-manifest.json
 
             lake build mdgen
           '';
